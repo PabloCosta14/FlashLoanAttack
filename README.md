@@ -1,120 +1,65 @@
-# Flashloan Attack Simulation (organizado y modular)
-
-**Propósito:** proyecto educativo que simula un ataque tipo *flash loan* combinado con manipulación de un AMM y un oráculo ingenuo. Está organizado en módulos para mostrar buenas prácticas de arquitectura y facilitar la experimentación con defensas. **Solo uso educativo.**
-
----
-## Estructura del proyecto
-
-```
-flashloan_project/
-  main.py
-  defi/
-    amm.py         # Lógica del AMM (x*y=k, swaps)
-    oracle.py      # Oráculo ingenuo + snippet comentado para TWAP
-    flashloan.py   # Pool simple de flash loans
-    lending.py     # Protocolo vulnerable de lending + snippet comentado para circuit breaker
-    models.py      # Actor dataclass
-  simulation/
-    scenario_flashloan_attack.py  # Orquestador: ejecuta exactamente el ataque paso a paso
-    transaction.py                # Context manager Transaction: snapshot/rollback y resumen on_commit
-  utils/
-    printer.py     # pretty() para imprimir estados y snippets de checks
-    config.py      # parámetros (fees, LTV, iniciales)
-  README.md
-```
-
----
-## Cómo ejecutar
-
-Desde la raíz del proyecto (donde está `main.py`) ejecuta:
-
-```bash
-python3 main.py
-```
-
-Verás en pantalla el flujo de la simulación y, además, mensajes por cada **transacción** (pasos 2, 3 y 4) con:
-- ENTER tx (snapshot),
-- [SUMMARY ...] con datos numéricos (B gastado, A recibida, cambios de reservas),
-- COMMIT tx (o ROLLBACK si algo falla).
+# Simulación de un Ataque con Flash Loan  
+(Proyecto educativo orientado a entender y prevenir riesgos en DeFi)
 
 ---
 
-## Dónde habilitar defensas (comentadas en el código)
+## ¿De qué trata este proyecto?
 
-El proyecto incluye **fragmentos comentados** que muestran cómo podrías activar contramedidas reales. Para activarlas debes editar los archivos y descomentar/adaptar el código, luego re-ejecutar `main.py`.
+Este es un simulador educativo que reproduce un ataque clásico en DeFi (finanzas descentralizadas), donde un actor malintencionado —llamado “atacante”— usa un préstamo flash loan (un préstamo que se pide y se devuelve en una sola transacción) para manipular temporalmente el precio de un activo y así obtener ganancias ilícitas.
 
-### 1) TWAP Oracle (anti-manipulación temporal)
-Archivo: `defi/oracle.py`
+El objetivo no es promover el ataque, sino entender cómo funciona, por qué es posible, y sobre todo: cómo prevenirlo con buenas prácticas y mecanismos de defensa.
 
-Dentro hay una clase comentada `TWAPOracle` que mantiene una ventana de muestras y devuelve un promedio. Para usarla:
-- Descomenta la clase `TWAPOracle` en `defi/oracle.py` (quita las líneas `#` que la rodean).
-- En `simulation/scenario_flashloan_attack.py` reemplaza la creación del oráculo:
-```py
-# oracle = Oracle(amm)
-oracle = TWAPOracle(amm, window_seconds=60)
-```
 
-### 2) Circuit breaker en lending (detectar saltos de precio)
-Archivo: `defi/lending.py`
 
-Hay una clase comentada `LendingProtocolWithCircuit`. Para usarla:
-- Descomenta la clase en `defi/lending.py`.
-- En el `scenario_flashloan_attack.py` instancia esa clase en vez de `LendingProtocol`:
-```py
-# protocol = LendingProtocol(oracle, LENDING_LTV)
-protocol = LendingProtocolWithCircuit(oracle, ltv=LENDING_LTV, circuit_threshold=0.2)
-```
-- Puedes llamar `protocol.update_last_price()` periódicamente para refrescar la referencia.
+## ¿Cómo funciona el ataque? 
 
-### 3) Límites por transacción y slippage (demo)
-Archivo: `simulation/scenario_flashloan_attack.py`
+1. **El atacante toma un préstamo gigante… sin poner garantía.**  
+   Gracias a los flash loans, puede pedir miles de dólares por unos segundos —siempre y cuando los devuelva en la misma transacción.
 
-Al inicio del `run_flashloan_attack()` hay variables configurables (comentadas):
-```py
-# PER_TX_CAP_B = None  # e.g. 5000.0
-PER_TX_CAP_B = None
+2. **Con ese dinero, “mueve” el mercado artificialmente.**  
+   Usa un pool de liquidez (como los de Uniswap), donde el precio depende de la proporción entre dos activos (por ejemplo, Token A y Token B). Al comprar mucho Token A con Token B, hace que el precio de A suba mucho… pero solo por un instante.
 
-# MAX_SLIPPAGE = None  # e.g. 0.15 for 15%
-MAX_SLIPPAGE = None
-```
+3. **Ese precio inflado se le reporta a un oráculo “ingenuo”.**  
+   Un oráculo es un componente que le dice a otros contratos cuál es el precio actual de un activo. Si el oráculo solo mira el último precio del pool —y no considera datos históricos—, se cree el engaño.
 
-Para activar estas defensas, edita esas líneas y asigna valores no-None. Por ejemplo:
-```py
-PER_TX_CAP_B = 5000.0
-MAX_SLIPPAGE = 0.15
-```
+4. **El atacante usa ese precio falso para pedir un préstamo real.**  
+   En un protocolo de préstamos (como Aave), deposita Token A como garantía. Como el oráculo dice que A vale mucho, recibe más dinero del que realmente merece.
 
-Luego ajusta los `pre_check`/`post_check` dentro de las transacciones (ya existe un lugar donde puedes aplicar estas variables para bloquear/rollback si el atacante intenta gastar más de `PER_TX_CAP_B` o mover el precio más del `MAX_SLIPPAGE`).
+5. **Finalmente, revierte la manipulación y se queda con ganancias.**  
+   Vende el Token A de vuelta al pool, devolviendo el mercado a su estado original, paga el flash loan (más una pequeña comisión), y se queda con el dinero extra que obtuvo del préstamo fraudulento.
+
+En resumen: usa dinero prestado para engañar al sistema, sacar ventaja, y devolver todo… menos las ganancias.
 
 ---
 
-## Qué imprime cada transacción (ejemplo)
-```
-[TX-Step2-Manipulate] ENTER tx; snapshots taken.
-[SUMMARY TX-Step2-Manipulate] B gastado=9900.00, A recibida=4967.36, AMM A: 10000.00 -> 5032.64, AMM B: 10000.00 -> 19870.30
-[TX-Step2-Manipulate] COMMIT tx.
-```
+## ¿Cómo se puede evitar esto?
 
-Y similares para `TX-Step3-DepositBorrow` y `TX-Step4-SellBack`.
+El simulador incluye varias estrategias reales que los protocolos usan hoy para protegerse. Se pueden activar fácilmente para ver cómo detienen el ataque antes de que termine.
 
----
+### 1. Oráculos con promedio en el tiempo (TWAP)  
+En vez de usar el último precio, el oráculo calcula un promedio de los precios observados durante los últimos minutos.  
+Así, una subida repentina (como la del ataque) no afecta tanto el valor reportado, y el precio sigue siendo más confiable.
 
-## Ideas para la entrega / presentación
+### 2. Circuit breakers (interruptores de emergencia)  
+El protocolo de préstamos puede detectar cambios bruscos en el precio (por ejemplo, una variación mayor al 20% en pocos segundos). Si detecta esto, pausa temporalmente las operaciones sensibles hasta que el mercado se estabilice.
 
-- Muestra el antes/después de las reservas del AMM y el valor del colateral en cada paso.  
-- Activa una defensa (por ejemplo `MAX_SLIPPAGE = 0.15`) y muestra cómo la transacción falla y hace rollback.  
-- Incluye en tu informe una discusión sobre por qué TWAP y circuit breakers reducen la ventana de manipulación.  
-- Explica las limitaciones del modelo (simulación, no mercado real, no fees de gas, etc.).
+### 3. Límites prácticos:  
+- **Límite por transacción**: Se restringe la cantidad máxima que se puede mover en una sola operación.  
+- **Control de deslizamiento (slippage)**: Si una operación intenta mover el precio más allá de un umbral razonable (por ejemplo, 15%), se rechaza automáticamente.
 
----
-## Notas técnicas
-
-- La clase `Transaction` hace snapshot usando `deepcopy(obj.__dict__)`. Funciona para este proyecto porque los objetos son simples. Si más adelante agregas recursos externos, necesitarás otra estrategia de snapshot/rollback.
-- Código educativo: no intentes reproducir esto en entornos reales ni atacar sistemas reales.
+Estas medidas no son infalibles, pero hacen el ataque mucho más difícil, costoso o directamente inviable.
 
 ---
-## Soporte
 
-Si quieres que yo active por defecto una defensa (p.ej. `PER_TX_CAP_B = 5000` y `MAX_SLIPPAGE = 0.15`) o que genere un ejemplo de `README` en LaTeX, o una diapositiva con gráficos, dímelo y lo hago.
+## ¿Cómo está organizado el simulador?
 
----
+El código está dividido en módulos claros, pensados para facilitar el aprendizaje:
+
+| Carpeta | Función |
+|--------|----------|
+| `defi/` | Contiene los componentes del ecosistema: el mercado (AMM), el oráculo, el protocolo de préstamos, etc. |
+| `simulation/` | Ejecuta el ataque paso a paso, registrando cada transacción con entradas y salidas numéricas. |
+| `utils/` | Proporciona herramientas para mostrar el estado del sistema antes y después de cada operación. |
+
+Al ejecutar el programa (`python main.py`), se muestra cada etapa del ataque con datos concretos. Si se activa una defensa, se puede observar cómo la transacción se cancela automáticamente (rollback), evitando el daño.
+

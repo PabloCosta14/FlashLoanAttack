@@ -1,5 +1,5 @@
 # Simulación de un Ataque con Flash Loan  
-(Proyecto educativo orientado a entender y prevenir riesgos en DeFi)
+
 
 ---
 

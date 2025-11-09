@@ -1,0 +1,8 @@
+"""Parámetros globales del experimento (fácilmente editables)."""
+AMM_RESERVE_A = 10_000.0
+AMM_RESERVE_B = 10_000.0
+AMM_FEE = 0.003
+FLASH_POOL_LIQUIDITY_B = 20_000.0
+FLASH_POOL_FEE = 0.0009
+LENDING_LTV = 0.7
+ATTACKER_INITIAL_A = 1_000.0
